@@ -11,3 +11,6 @@ artifacts/*
 *.log
 .DS_Store
 Thumbs.db
+!artifacts/*.md
+!artifacts/*.json
+
