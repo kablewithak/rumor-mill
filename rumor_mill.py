@@ -76,12 +76,22 @@ def main():
             scored = score_and_dedupe(raw)
             clusters_dump[d] = cluster_for_trace(scored)
             pick = pick_one(d, scored)
-            picks[d] = pick
+            if pick:
+                picks[d] = pick
+            else: 
+                log(f"[{d}] WARNING: no representative pick after scoring")
 
         except Exception as e:
             log(f"[{d}] ERROR: {e}")
             continue
+        if not picks:
+            log("[fatal] no domains succeeded; exiting 2")
+            raise SystemExit(2)
 
+        if not any(bool(v) for v in picks.values()):
+            log("[fatal] picks is present but empty-ish; exiting 2")
+            raise SystemExit(2)
+    
     md = to_markdown(picks, date=date)
 
     if not args.dry_run:
