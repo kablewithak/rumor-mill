@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 from typing import List, Dict, Any
 import json as _json
@@ -12,6 +12,9 @@ except Exception:
 
 from dotenv import load_dotenv
 load_dotenv()
+
+from agent_client import AnthropicAgentClient
+
 
 def _extract_json(text: str) -> str:
     if not text:
@@ -346,4 +349,31 @@ def pick_one(domain: str, scored_items: List[Dict[str, Any]]) -> Dict[str, Any]:
     except Exception as e:
         print(f"[agent] JSON parse failed → fallback: {e}")
         return _heuristic_pick_one(domain, scored_items)
+
+# === Agent adapter entrypoint (Anthropic transport today; Claude-agent-sdk later) ===
+def choose_with_agent(domain: str, candidates: list, k: int = 3):
+    """
+    Use AnthropicAgentClient to select up to k items.
+    Returns: [{'idx': int, 'rationale': str, 'confidence': float}, ...]
+    """
+    import os
+    model = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+    max_tok = int(os.getenv("MAX_AGENT_TOKENS_CHOOSE", "120"))
+
+    client = AnthropicAgentClient(model=model, max_tokens=max_tok)
+    picks = client.choose(domain=domain, items=candidates, k=k)
+
+    # Defensive: ensure structure & bounds
+    out = []
+    for p in (picks or [])[:k]:
+        if not isinstance(p, dict):
+            continue
+        idx = p.get("idx")
+        if isinstance(idx, int) and 0 <= idx < len(candidates):
+            out.append({
+                "idx": idx,
+                "rationale": (p.get("rationale") or "").strip(),
+                "confidence": float(p.get("confidence", 0.5)),
+            })
+    return out
 
