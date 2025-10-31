@@ -13,4 +13,6 @@ artifacts/*
 Thumbs.db
 !artifacts/*.md
 !artifacts/*.json
+artifacts/*
+!artifacts/.gitkeep
 

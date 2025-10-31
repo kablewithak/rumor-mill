@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from collectors import collect_from_sources
 from ranker import score_and_dedupe, filter_by_domain
-from agent import pick_one, cluster_for_trace, choose_with_agent
+from agent import cluster_for_trace, choose_with_agent, _heuristic_pick_one
 from formatter import to_markdown
 from config import DOMAINS, MAX_ITEMS
 
@@ -45,7 +45,7 @@ def main():
             with open(args.log_file, "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
 
-    # === helper: convert agent indices into final objects and compose a single Markdown block ===
+    # === helper: convert agent indices into final objects ===
     def _materialize_ai_picks(candidates: list, picks_list: list) -> list:
         out = []
         for p in (picks_list or []):
@@ -73,6 +73,8 @@ def main():
             if not urls:
                 log(f"[{d}] WARNING: no sources configured")
                 continue
+
+            # Collect
             raw = []
             for u in tqdm(urls, desc=f"Fetching {d}"):
                 raw.extend(
@@ -82,6 +84,7 @@ def main():
                     )
                 )
 
+            # Filter & quick sample
             before = len(raw)
             raw = filter_by_domain(d, raw)
             after = len(raw)
@@ -89,19 +92,25 @@ def main():
 
             if args.verbose:
                 for sample in raw[:3]:
-                    log(f"  - {sample['title']}")
+                    log(f"  - {sample.get('title', '(untitled)')}")
 
             raw_dump[d] = raw
 
+            # Score & cluster
             scored = score_and_dedupe(raw)
             clusters_dump[d] = cluster_for_trace(scored)
 
+            # Agentic top-k for AI (env toggle)
             use_agent = (os.getenv("USE_AGENT", "").lower() in {"1", "true", "yes", "y"})
             if d == "ai" and use_agent:
-                agent_sel = choose_with_agent(domain="ai", candidates=scored, k=args.picks)
-                final_ai = _materialize_ai_picks(scored, agent_sel)
+                try:
+                    agent_sel = choose_with_agent(domain="ai", candidates=scored, k=args.picks)
+                    final_ai = _materialize_ai_picks(scored, agent_sel)
+                except Exception as e:
+                    log(f"[{d}] agent error: {e}; falling back to heuristic")
+                    final_ai = []
+
                 if final_ai:
-                    # Compose into a single pick dict so formatter doesn't need changes
                     lines = []
                     total_conf = 0.0
                     for n, it in enumerate(final_ai, 1):
@@ -112,6 +121,7 @@ def main():
                         total_conf += conf
                         lines.append(f"{n}. {title} — {rationale} (conf {conf:.2f})  {link}")
                     avg_conf = round(total_conf / max(1, len(final_ai)), 2)
+                    log(f"[{d}] agent picks = {len(final_ai)} (avg_conf={avg_conf})")
                     picks[d] = {
                         "title": f"AI — Today’s {len(final_ai)} rumors",
                         "summary": "\n".join(lines),
@@ -120,12 +130,15 @@ def main():
                         "sources": [{"title": it["title"], "url": it.get("link", "")} for it in final_ai[:3]],
                     }
                 else:
-                    log(f"[{d}] agent returned no picks; falling back to heuristic")
-                    pick = pick_one(d, scored)
+                    log(f"[{d}] agent returned no picks from {len(scored)} candidates; falling back to heuristic")
+                    pick = _heuristic_pick_one(d, scored)
                     if pick:
                         picks[d] = pick
+                    else:
+                        log(f"[{d}] WARNING: no representative pick after scoring")
             else:
-                pick = pick_one(d, scored)
+                # Non-agent path (or non-AI domain): strict heuristic
+                pick = _heuristic_pick_one(d, scored)
                 if pick:
                     picks[d] = pick
                 else:
@@ -134,14 +147,17 @@ def main():
         except Exception as e:
             log(f"[{d}] ERROR: {e}")
             continue
-        if not picks:
-            log("[fatal] no domains succeeded; exiting 2")
-            raise SystemExit(2)
 
-        if not any(bool(v) for v in picks.values()):
-            log("[fatal] picks is present but empty-ish; exiting 2")
-            raise SystemExit(2)
-    
+    # Run fatal checks AFTER processing all domains
+    if not picks:
+        log("[fatal] no domains succeeded; exiting 2")
+        raise SystemExit(2)
+
+    if not any(bool(v) for v in picks.values()):
+        log("[fatal] picks is present but empty-ish; exiting 2")
+        raise SystemExit(2)
+
+    # Render & write
     md = to_markdown(picks, date=date)
 
     if not args.dry_run:
